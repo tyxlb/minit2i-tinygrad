@@ -1,0 +1,4 @@
+pillow
+tinygrad
+torch
+transformers
