@@ -151,6 +151,8 @@ class PlainTextTransformerBlock:
             b, length, 3, self.num_heads, self.head_dim
         )
         q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
+        q = self.rope(self.q_norm(q))
+        k = self.rope(self.k_norm(k))
         q_perm = q.permute(0, 2, 1, 3)
         k_perm = k.permute(0, 2, 3, 1)
         v_perm = v.permute(0, 2, 1, 3)
