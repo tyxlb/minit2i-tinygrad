@@ -19,16 +19,9 @@ class TimestepEmbedder:
             None,
             nn.Linear(hidden_size, hidden_size),
         ]
-        self.freqs = (
-            (
-                -math.log(10000.0)
-                * Tensor.arange(self.half).cast(dtypes.float32)
-                / self.half
-            )
-            .exp()
-            .is_param_(False)
-            .realize()
-        )
+        self.freqs = 10000.0 ** (
+            -Tensor.arange(self.half, dtype=dtypes.float32) / self.half
+        ).is_param_(False)
 
     def __call__(self, t: Tensor) -> Tensor:
         freqs = self.freqs.to(t.device)
@@ -153,12 +146,10 @@ class PlainTextTransformerBlock:
         q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
         q = self.rope(self.q_norm(q))
         k = self.rope(self.k_norm(k))
-        q_perm = q.permute(0, 2, 1, 3)
-        k_perm = k.permute(0, 2, 3, 1)
-        v_perm = v.permute(0, 2, 1, 3)
-        attn = (q_perm @ k_perm) * (self.head_dim**-0.5)
-        attn = attn.softmax()
-        out = attn @ v_perm
+        q = q.permute(0, 2, 1, 3)
+        k = k.permute(0, 2, 1, 3)
+        v = v.permute(0, 2, 1, 3)
+        out = Tensor.scaled_dot_product_attention(q, k, v)
         out = out.permute(0, 2, 1, 3).reshape(b, length, -1)
         txt = txt + self.attn_proj(out)
         txt = txt + self.mlp(self.norm2(txt))
@@ -207,12 +198,10 @@ class DoubleStreamDiTBlock:
         q = self.rope(q_t.cat(q_i, dim=1), txt_len=lt)
         k = self.rope(k_t.cat(k_i, dim=1), txt_len=lt)
         v = v_t.cat(v_i, dim=1)
-        q_perm = q.permute(0, 2, 1, 3)
-        k_perm = k.permute(0, 2, 3, 1)
-        v_perm = v.permute(0, 2, 1, 3)
-        attn = (q_perm @ k_perm) * (self.head_dim**-0.5)
-        attn = attn.softmax()
-        out = attn @ v_perm
+        q = q.permute(0, 2, 1, 3)
+        k = k.permute(0, 2, 1, 3)
+        v = v.permute(0, 2, 1, 3)
+        out = Tensor.scaled_dot_product_attention(q, k, v)
         out = out.permute(0, 2, 1, 3)
         x = x + self.img_attn_proj(out[:, lt:].reshape(b, li, -1))
         txt = txt + self.txt_attn_proj(out[:, :lt].reshape(b, lt, -1))
@@ -309,11 +298,9 @@ class MMJiT:
             for _ in range(cfg.depth_double)
         ]
         self.final_layer = FinalLayer(cfg.hidden_size, cfg.patch_size, cfg.in_channels)
-        self.pos = (
-            get_2d_sincos_pos_embed(self.cfg.hidden_size, self.latent_img_size)
-            .is_param_(False)
-            .realize()
-        )
+        self.pos = get_2d_sincos_pos_embed(
+            self.cfg.hidden_size, self.latent_img_size
+        ).is_param_(False)
 
     def unpatchify(self, x):
         b = x.shape[0]

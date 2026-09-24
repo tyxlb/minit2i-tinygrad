@@ -12,7 +12,7 @@ Tested on an **RTX 4060**, minit2i-b16, 100 steps:
 | Implementation | Model Loading | Inference Time |
 | :--- | :--- | :--- |
 | **PyTorch (diffusers)** | < 1 second | ~10 seconds |
-| **tinygrad** | ~5 seconds | ~2 minutes |
+| **tinygrad** | ~5 seconds | ~120 seconds |
 
 <table>
   <tr>
