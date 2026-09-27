@@ -346,7 +346,7 @@ class DiffusionModel:
 
     def pred_velocity(self, x, t, text, mask):
         x0 = self.net(x, self.real_t_to_embed_t(t), text, mask)
-        return (x0 - x) / Tensor.clamp(1 - t[:, None, None, None], min_=0.001)
+        return (x0 - x) / Tensor.clamp(1 - t, min_=0.001)[:, None, None, None]
 
     def cfg_velocity(self, x, t, text, mask, cfg_scale: float):
         b = x.shape[0]
@@ -359,7 +359,7 @@ class DiffusionModel:
         use_cfg = (
             (t >= self.cfg.cfg_interval[0]) & (t <= self.cfg.cfg_interval[1])
         ).cast(out.dtype)
-        scale = use_cfg.reshape(-1, 1, 1, 1) * (cfg_scale - 1.0) + 1.0
+        scale = use_cfg * (cfg_scale - 1.0) + 1.0
         return uncond + (cond - uncond) * scale
 
     def sample(self, text, mask, cfg_scale=6.0, progress=False):
@@ -385,8 +385,7 @@ class DiffusionModel:
             .to(device)
             .realize()
         )
-        t_cur_in = Tensor.empty(b, dtype=dtype, device=device)
-        t_next_in = Tensor.empty(b, dtype=dtype, device=device)
+        t_in = Tensor.empty(2, dtype=dtype, device=device)
         iterator = range(self.cfg.n_T)
         if progress:
             from tqdm.auto import tqdm
@@ -394,15 +393,17 @@ class DiffusionModel:
             iterator = tqdm(iterator)
 
         @TinyJit
-        def _jit_step(x, t_cur, t_next, text, mask):
+        def _jit_step(x, t_in, text, mask):
+            dtype = x.dtype
+            t_cur = t_in[0:1]
+            t_next = t_in[1:2]
             v = self.cfg_velocity(x, t_cur, text, mask, cfg_scale)
-            x = x + (t_next - t_cur)[:, None, None, None] * v
-            return x.realize()
+            x = x + (t_next - t_cur) * v
+            return x.cast(dtype)
 
         for i in iterator:
-            t_cur_in.assign(timesteps[i].expand(b)).realize()
-            t_next_in.assign(timesteps[i + 1].expand(b)).realize()
-            x = _jit_step(x, t_cur_in, t_next_in, text, mask)
+            t_in.assign(timesteps[i : i + 2]).realize()
+            x.assign(_jit_step(x, t_in, text, mask)).realize()
         return x
 
 
