@@ -77,12 +77,17 @@ class TextRotaryEmbedding1D:
         self.theta = theta
 
     def __call__(self, x):
-        b, length, h, d = x.shape
-        inv = 1.0 / (self.theta ** (Tensor.arange(0, d, 2, dtype=dtypes.float32) / d))
+        length = x.shape[2]
+        inv = 1.0 / (
+            self.theta
+            ** (
+                Tensor.arange(0, self.head_dim, 2, dtype=dtypes.float32) / self.head_dim
+            )
+        )
         pos = Tensor.arange(length, dtype=dtypes.float32)
         angles = pos.reshape(-1, 1) * inv.reshape(1, -1)
-        cos = angles.cos().cast(x.dtype).reshape(1, length, 1, -1)
-        sin = angles.sin().cast(x.dtype).reshape(1, length, 1, -1)
+        cos = angles.cos().cast(x.dtype).reshape(length, -1)
+        sin = angles.sin().cast(x.dtype).reshape(length, -1)
         x1, x2 = x.chunk(2, dim=-1)
         return (x1 * cos - x2 * sin).cat(x2 * cos + x1 * sin, dim=-1)
 
@@ -93,7 +98,7 @@ class VisionRotaryEmbeddingFast:
         self.theta = theta
 
     def __call__(self, x):
-        length = x.shape[1]
+        length = x.shape[2]
         side = int(math.sqrt(length))
         if side * side != length:
             raise ValueError(f"image token length must be square, got {length}")
@@ -107,8 +112,8 @@ class VisionRotaryEmbeddingFast:
         f_w = base.reshape(1, side, -1).expand(side, side, -1)
         angles = f_h.cat(f_w, dim=-1)
         angles = angles.reshape(length, -1)
-        cos = angles.cos().cast(x.dtype).reshape(1, length, 1, -1)
-        sin = angles.sin().cast(x.dtype).reshape(1, length, 1, -1)
+        cos = angles.cos().cast(x.dtype).reshape(length, -1)
+        sin = angles.sin().cast(x.dtype).reshape(length, -1)
         x1, x2 = x.chunk(2, dim=-1)
         return (x1 * cos - x2 * sin).cat(x2 * cos + x1 * sin, dim=-1)
 
@@ -119,9 +124,9 @@ class MultiModalRotaryEmbeddingFast:
         self.vision_rope = VisionRotaryEmbeddingFast(head_dim)
 
     def __call__(self, x, txt_len: int):
-        txt = self.text_rope(x[:, :txt_len])
-        img = self.vision_rope(x[:, txt_len:])
-        return txt.cat(img, dim=1)
+        txt = self.text_rope(x[:, :, :txt_len])
+        img = self.vision_rope(x[:, :, txt_len:])
+        return txt.cat(img, dim=2)
 
 
 class PlainTextTransformerBlock:
@@ -143,12 +148,10 @@ class PlainTextTransformerBlock:
         qkv = self.qkv(self.norm1(txt)).reshape(
             b, length, 3, self.num_heads, self.head_dim
         )
-        q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
+        qkv = qkv.permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
         q = self.rope(self.q_norm(q))
         k = self.rope(self.k_norm(k))
-        q = q.permute(0, 2, 1, 3)
-        k = k.permute(0, 2, 1, 3)
-        v = v.permute(0, 2, 1, 3)
         out = Tensor.scaled_dot_product_attention(q, k, v)
         out = out.permute(0, 2, 1, 3).reshape(b, length, -1)
         txt = txt + self.attn_proj(out)
@@ -190,17 +193,16 @@ class DoubleStreamDiTBlock:
         x_norm = self.img_norm1(x)
         txt_norm = self.txt_norm1(txt)
         qkv_i = self.img_qkv(x_norm).reshape(b, li, 3, self.num_heads, self.head_dim)
+        qkv_i = qkv_i.permute(2, 0, 3, 1, 4)
         qkv_t = self.txt_qkv(txt_norm).reshape(b, lt, 3, self.num_heads, self.head_dim)
-        q_i, k_i, v_i = qkv_i[:, :, 0], qkv_i[:, :, 1], qkv_i[:, :, 2]
-        q_t, k_t, v_t = qkv_t[:, :, 0], qkv_t[:, :, 1], qkv_t[:, :, 2]
+        qkv_t = qkv_t.permute(2, 0, 3, 1, 4)
+        q_i, k_i, v_i = qkv_i[0], qkv_i[1], qkv_i[2]
+        q_t, k_t, v_t = qkv_t[0], qkv_t[1], qkv_t[2]
         q_i, k_i = self.q_norm(q_i), self.k_norm(k_i)
         q_t, k_t = self.q_norm(q_t), self.k_norm(k_t)
-        q = self.rope(q_t.cat(q_i, dim=1), txt_len=lt)
-        k = self.rope(k_t.cat(k_i, dim=1), txt_len=lt)
-        v = v_t.cat(v_i, dim=1)
-        q = q.permute(0, 2, 1, 3)
-        k = k.permute(0, 2, 1, 3)
-        v = v.permute(0, 2, 1, 3)
+        q = self.rope(q_t.cat(q_i, dim=2), txt_len=lt)
+        k = self.rope(k_t.cat(k_i, dim=2), txt_len=lt)
+        v = v_t.cat(v_i, dim=2)
         out = Tensor.scaled_dot_product_attention(q, k, v)
         out = out.permute(0, 2, 1, 3)
         x = x + self.img_attn_proj(out[:, lt:].reshape(b, li, -1))
@@ -354,7 +356,7 @@ class DiffusionModel:
         tt = t.cat(t, dim=0)
         yy = text.cat(text, dim=0)
         mm = mask.cat(Tensor.zeros_like(mask), dim=0)
-        out = self.pred_velocity(xx, tt, yy, mm)
+        out = self.pred_velocity(xx, tt, yy, mm).cast(x.dtype)
         cond, uncond = out[:b], out[b:]
         use_cfg = (
             (t >= self.cfg.cfg_interval[0]) & (t <= self.cfg.cfg_interval[1])
@@ -394,12 +396,11 @@ class DiffusionModel:
 
         @TinyJit
         def _jit_step(x, t_in, text, mask):
-            dtype = x.dtype
             t_cur = t_in[0:1]
             t_next = t_in[1:2]
             v = self.cfg_velocity(x, t_cur, text, mask, cfg_scale)
             x = x + (t_next - t_cur) * v
-            return x.cast(dtype)
+            return x
 
         for i in iterator:
             t_in.assign(timesteps[i : i + 2]).realize()
