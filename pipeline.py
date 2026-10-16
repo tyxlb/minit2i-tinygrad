@@ -25,7 +25,7 @@ class TimestepEmbedder:
 
     def __call__(self, t: Tensor) -> Tensor:
         freqs = self.freqs.to(t.device)
-        args = t.cast(dtypes.float32).reshape(-1, 1) * freqs.reshape(1, self.half)
+        args = t.cast(dtypes.float32).reshape(-1, 1) * freqs
         emb = Tensor.cat(args.cos(), args.sin(), dim=-1)
         emb = emb.cast(self.mlp[0].weight.dtype)
         x = self.mlp[0](emb)
@@ -78,16 +78,14 @@ class TextRotaryEmbedding1D:
 
     def __call__(self, x):
         length = x.shape[2]
-        inv = 1.0 / (
-            self.theta
-            ** (
-                Tensor.arange(0, self.head_dim, 2, dtype=dtypes.float32) / self.head_dim
-            )
+        inv = self.theta ** (
+            -Tensor.arange(0, self.head_dim, 2, dtype=dtypes.float32) / self.head_dim
         )
         pos = Tensor.arange(length, dtype=dtypes.float32)
-        angles = pos.reshape(-1, 1) * inv.reshape(1, -1)
-        cos = angles.cos().cast(x.dtype).reshape(length, -1)
-        sin = angles.sin().cast(x.dtype).reshape(length, -1)
+        angles = pos.reshape(-1, 1) * inv
+        angles = angles.cast(x.dtype).reshape(length, -1)
+        cos = angles.cos()
+        sin = angles.sin()
         x1, x2 = x.chunk(2, dim=-1)
         return (x1 * cos - x2 * sin).cat(x2 * cos + x1 * sin, dim=-1)
 
@@ -102,18 +100,17 @@ class VisionRotaryEmbeddingFast:
         side = int(math.sqrt(length))
         if side * side != length:
             raise ValueError(f"image token length must be square, got {length}")
-        freqs = 1.0 / (
-            self.theta
-            ** (Tensor.arange(0, self.dim, 2, dtype=dtypes.float32) / self.dim)
+        freqs = self.theta ** (
+            -Tensor.arange(0, self.dim, 2, dtype=dtypes.float32) / self.dim
         )
         t = Tensor.arange(side, dtype=dtypes.float32)
-        base = t.reshape(-1, 1) * freqs.reshape(1, -1)
+        base = t.reshape(-1, 1) * freqs
         f_h = base.reshape(side, 1, -1).expand(side, side, -1)
         f_w = base.reshape(1, side, -1).expand(side, side, -1)
         angles = f_h.cat(f_w, dim=-1)
-        angles = angles.reshape(length, -1)
-        cos = angles.cos().cast(x.dtype).reshape(length, -1)
-        sin = angles.sin().cast(x.dtype).reshape(length, -1)
+        angles = angles.cast(x.dtype).reshape(length, -1)
+        cos = angles.cos()
+        sin = angles.sin()
         x1, x2 = x.chunk(2, dim=-1)
         return (x1 * cos - x2 * sin).cat(x2 * cos + x1 * sin, dim=-1)
 
