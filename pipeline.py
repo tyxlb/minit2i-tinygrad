@@ -174,8 +174,8 @@ class DoubleStreamDiTBlock:
         q_t, k_t, v_t = qkv_t[0], qkv_t[1], qkv_t[2]
         q_i, k_i = self.q_norm(q_i), self.k_norm(k_i)
         q_t, k_t = self.q_norm(q_t), self.k_norm(k_t)
-        q = self.rope(q_t.cat(q_i, dim=2), txt_len=lt)
-        k = self.rope(k_t.cat(k_i, dim=2), txt_len=lt)
+        q = Tensor.cat(self.rope.text_rope(q_t), self.rope.vision_rope(q_i), dim=2)
+        k = Tensor.cat(self.rope.text_rope(k_t), self.rope.vision_rope(k_i), dim=2)
         v = v_t.cat(v_i, dim=2)
         out = Tensor.scaled_dot_product_attention(q, k, v)
         out = out.permute(0, 2, 1, 3)
