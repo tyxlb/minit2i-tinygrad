@@ -10,29 +10,6 @@ from transformers import logging as transformers_logging
 transformers_logging.set_verbosity_error()
 
 
-class TimestepEmbedder:
-    def __init__(self, hidden_size: int, frequency_embedding_size: int = 256):
-        self.frequency_embedding_size = frequency_embedding_size
-        self.half = frequency_embedding_size // 2
-        self.mlp = [
-            nn.Linear(frequency_embedding_size, hidden_size),
-            None,
-            nn.Linear(hidden_size, hidden_size),
-        ]
-        self.freqs = 10000.0 ** (
-            -Tensor.arange(self.half, dtype=dtypes.float32) / self.half
-        ).is_param_(False)
-
-    def __call__(self, t: Tensor) -> Tensor:
-        freqs = self.freqs.to(t.device)
-        args = t.cast(dtypes.float32).reshape(-1, 1) * freqs
-        emb = Tensor.cat(args.cos(), args.sin(), dim=-1)
-        emb = emb.cast(self.mlp[0].weight.dtype)
-        x = self.mlp[0](emb)
-        x = x.silu()
-        return self.mlp[2](x)
-
-
 class BottleneckPatchEmbed:
     def __init__(
         self,
@@ -276,7 +253,6 @@ class MMJiT:
             cfg.txt_input_size, cfg.txt_hidden_size, bias=False
         )
         self.mask_token = Tensor.zeros(1, 1, cfg.txt_input_size)
-        self.t_embedder = TimestepEmbedder(cfg.cond_vec_size)
         self.pooled_embedder = nn.Linear(
             cfg.txt_input_size, cfg.cond_vec_size, bias=False
         )
@@ -319,12 +295,8 @@ class MMJiT:
         )
         x = self.img_embedder(img)
         x = x + self.pos.cast(x.dtype).to(x.device)[None]
-        t_vec = self.t_embedder(t)
         txt = self.txt_embedder(context.cast(self.txt_embedder.weight.dtype))
-        pooled_text = context.mean(axis=1)
-        vec = t_vec + self.pooled_embedder(
-            pooled_text.cast(self.pooled_embedder.weight.dtype)
-        )
+        vec = None
         for block in self.txt_preamble_blocks:
             txt = block(txt)
         for block in self.double_blocks:
